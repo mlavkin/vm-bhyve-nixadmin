@@ -29,7 +29,13 @@
 util::setup(){
     util::load_module "nmdm"
     util::load_module "if_bridge"
-    util::load_module "if_tap"
+
+    # tap(4) & tun(4) were unified in r347241, this is closest ABI bump
+    if [ `uname -U` -ge 1300029 ]; then
+        util::load_module "if_tuntap"
+    else
+        util::load_module "if_tap"
+    fi
 
     sysctl net.link.tap.up_on_open=1 >/dev/null 2>&1
 
@@ -76,8 +82,14 @@ util::check_bhyve_support(){
     util::checkyesno "$vm_disable_host_checks" && return 0
 
     # check sysctls
-    [ "`sysctl -n hw.vmm.vmx.initialized 2>/dev/null`" != "1" ] && util::err "kernel vmm not initialised (no VT-x / AMD SVM cpu support?)"
-    [ "`sysctl -n hw.vmm.vmx.cap.unrestricted_guest 2>/dev/null`" != "1" ] && VM_NO_UG="1"
+    # these only work for intel
+    # for AMD we give up trying to check for the time being
+    sysctl hw.model |grep Intel >/dev/null 2>&1
+
+    if [ $? -eq 0 ]; then
+        [ "`sysctl -n hw.vmm.vmx.initialized 2>/dev/null`" != "1" ] && util::err "kernel vmm not initialised (no VT-x / AMD SVM cpu support?)"
+        [ "`sysctl -n hw.vmm.vmx.cap.unrestricted_guest 2>/dev/null`" != "1" ] && VM_NO_UG="1"
+    fi
 }
 
 # check for passthru support
@@ -151,10 +163,11 @@ Usage: vm ...
     datastore add <name> <path>
     list
     info [name] [...]
-    create [-d datastore] [-t template] [-s size] <name>
+    create [-d datastore] [-t template] [-s size] [-m memory] [-c vCPUs] <name>
     install [-fi] <name> <iso>
     start [-fi] <name> [...]
     stop <name> [...]
+    restart <name>
     console <name> [com1|com2]
     configure <name>
     rename <name> <new-name>
@@ -169,6 +182,7 @@ Usage: vm ...
     snapshot [-f] <name[@snapshot]>
     rollback [-r] <name@snapshot>
     iso [url]
+    img [url]
     image list
     image create [-d description] [-u] <name>
     image destroy <uuid>

@@ -101,6 +101,9 @@
 .Ar name
 .Ar ...
 .Nm
+.Cm restart
+.Ar name
+.Nm
 .Cm console
 .Ar name
 .Op Ar com1|com2
@@ -314,7 +317,8 @@ You will also need a copy of the UEFI firmware.
 This can either be installed using the
 .Pa sysutils/uefi-edk2-bhyve
 port, or you can manually download a copy (see URL below) to
-.Pa $vm_dir/.config/BHYVE_UEFI.fd .
+.Pa $vm_dir/.config/BHYVE_UEFI.fd and configure a guest to use it by setting
+.Sy loader="uefi-custom" .
 .Pp
 If you are running
 .Fx 10
@@ -521,7 +525,7 @@ removed from the bridge, reconfigured, then re-added.
 To remove the VLAN configuration from a virtual switch, specify a
 .Ar vlan-id
 of 0.
-.It Cm switch address Ar a.b.c.d/xx|none
+.It Cm switch address Ar name Ar a.b.c.d/xx|none
 Configure an IP address for the specified virtual switch. The address should
 be specified in CIDR notation. To remove an address, specify
 .Pa none
@@ -531,7 +535,7 @@ If NAT funtionality is required, please configure an address on the switch to
 become the gateway address for guests. Source NAT rules can then be created
 using your choice of firewall or NAT daemon. If DHCP is desired, we recommend
 using a manual switch and configuring this by hand.
-.It Cm switch private Ar on|off
+.It Cm switch private Ar name Ar on|off
 Enable of disable private mode for a virtual switch.
 In private mode, guests will only be able to communicate with the physical
 interface(s), not with each other.
@@ -725,6 +729,15 @@ If a guest is stuck in the bootloader stage, you are given the option to forcibl
 .Pp
 Multiple guests can be specified to this command at the same time.
 Each one will be sent a poweroff event.
+.It Cm restart Ar name
+Attempt to restart the specified guest. This causes a shutdown event to be sent to the
+guest, however, vm-bhyve will restart the guest rather than stopping completely.
+.Pp
+A benfit of using this function is that vm-bhyve will not destroy and recreate network devices like
+it would when using
+.Sy stop/start .
+Note that guest configuration is not re-loaded, so all guest settings will be as they were
+when the guest was originally started.
 .It Cm console Ar name Op Ar com1|com2
 Connect to the console of the named virtual machine.
 Without network access, this is the primary way of connecting to the guest once
@@ -990,22 +1003,14 @@ The settings for each guest are stored in
 An overview of the available configuration options is listed below.
 .Bl -tag -width 17n
 .It loader
-Windows, Linux &
-.Fx
-guests will use the correct loader by default.
-For other guests that require a loader to be used, this can set to
-.Sy bhyveload
+This option sets the loader to use for a guest and must be specified.
+The valid options are
+.Sy bhyveload ,
+.Sy grub ,
+.Sy uefi ,
+.Sy uefi-csm ,
 or
-.Sy grub .
-As an example,
-.Nx
-&
-.Ox
-can be supported by using the
-.Sy generic
-guest type, and specifying the
-.Sy grub
-loader.
+.Sy uefi-custom .
 .It bhyveload_loader
 This option allows a custom path to be used for the loader inside the guest.
 Passed to
@@ -1023,14 +1028,6 @@ If access to the grub console is needed, this can be increased to give more
 time to connect to the console.
 If access to the grub console is not required, it can also be reduced to speed
 up overall boot.
-.It uefi
-Set this (any non-empty value) for guests that need UEFI firmware.
-If set to
-.Sy csm ,
-the BIOS compatibility UEFI-CSM firmware will be used.
-.It cpu
-A numeric value specifying the number of virtual CPU cores to assign to the
-guest.
 .It cpu_sockets
 Specify the number of CPU sockets that should be exposed to the guest. The product
 of
@@ -1157,8 +1154,9 @@ At least one virtual disk is required.
 Valid options for this are currently
 .Sy virtio-blk ,
 .Sy ahci-hd
-and
 .Sy ahci-cd .
+and
+.Sy nvme .
 Additional disks can be added by adding additional
 .Sy diskX_type
 and
@@ -1183,24 +1181,41 @@ command, which will create the disk image for you.
 Normally disk images or zvols are stored directly inside the guest.
 To use a disk image that is stored anywhere else, you can specify the full path
 in this option, and configure the device as
-.Sy custom
+.Sy custom .
+.Pp
+To use an established iscsi device, specify a target 'session[/lun]' 
+(default /0) which matches a unique session from the 
+.Pf ' Xr iscsictl 8
+-L' command output, and configure the device as
+.Sy iscsi .
 .It disk0_dev
 The type of device to use for the disk.
 If not specified, this will default to
 .Sy file ,
 and a sparse file, located in the guest directory, will be used as the disk
 image.
-Other options include
+Other options include:
 .Sy zvol
-&
-.Sy sparse-zvol ,
-which will use a ZVOL as the disk image, created directly under the guest
-dataset.
-Alternatively you can specify
+or 
+.Sy sparse-zvol
+(which will use a ZVOL as the disk image, created directly under the guest
+dataset),
+.Sy custom , 
+and 
+.Sy iscsi .
+.Pp
+When using
 .Sy custom ,
-in which case
+the 
 .Pa diskX_name
-should be the full path to the image file or device.
+parameter must be set to the full path to the image file or device.
+.Pp
+Already attached iscsi devices can have their device nodes dynamically
+detected and used by setting this option to
+.Sy iscsi
+and
+.Pa diskX_name
+as described above.
 .It disk0_opts
 Any additional options to use for this disk device.
 Multiple options can be specified, separated by a comma.
@@ -1436,6 +1451,12 @@ look in the guest directory for the script.
 Note that although the guest is technically stopped when this process runs, calls to
 .Nm
 will still consider the guest locked.
+.It priority
+Allows a priority to be set for a guest by using the
+.Xr nice 8
+facility. The default value is 0, and has a range from -20, which is the highest
+priority, to 20. A priority of 20 will cause the guest to only run when the host
+system is idle.
 .It limit_pcpu
 Limit the bhyve process to the specified cpu percentage.
 .Pp

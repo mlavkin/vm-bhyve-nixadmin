@@ -56,7 +56,7 @@ vm::run(){
     config::get "_loader" "loader"
     config::get "_bootdisk" "disk0_name"
     config::get "_bootdisk_dev" "disk0_dev" "file"
-    config::get "_uefi" "uefi" "no"
+    config::get "_uefi" "uefi"
     config::get "_hostbridge" "hostbridge" "standard"
     config::get "_comports" "comports" "com1"
     config::get "_uuid" "uuid"
@@ -75,13 +75,22 @@ vm::run(){
         config::set "${_name}" "uuid" "${_uuid}"
     fi
 
+    # get cpu topology
     vm::__cpu "_cpu"
+
+    # check old uefi flag
+    if util::checkyesno "${_uefi}"; then
+        if [ "${_uefi}" = "csm" ]; then
+            _loader="uefi-csm"
+        else
+            _loader="uefi"
+        fi
+    fi
 
     util::log_rotate "guest" "${_name}"
     util::log "guest" "${_name}" \
       "initialising" \
-      " [loader: ${_loader:-none}]" \
-      " [uefi: ${_uefi}]" \
+      " [loader: ${_loader}]" \
       " [cpu: ${_cpu}]" \
       " [memory: ${_memory}]" \
       " [hostbridge: ${_hostbridge}]" \
@@ -93,7 +102,7 @@ vm::run(){
       " [primary disk dev: ${_bootdisk_dev}]"
 
     # check basic settings
-    if [ -z "${_cpu}" -o -z "${_memory}" -o -z "${_bootdisk}" ]; then
+    if [ -z "${_loader}" -o -z "${_cpu}" -o -z "${_memory}" -o -z "${_bootdisk}" ]; then
         util::log "guest" "${_name}" "fatal; unable to start - missing required configuration"
         exit 15
     fi
@@ -121,40 +130,33 @@ vm::run(){
     util::checkyesno "${_ignore_msr}" && _opts="${_opts}w"
 
     # if uefi, make sure we have bootrom, then update options for uefi support
-    if util::checkyesno "${_uefi}"; then
+    if [ "${_loader%-*}" = "uefi" ]; then
         if [ ${VERSION_BSD} -lt 1002509 ]; then
             util::log "guest" "${_name}" "fatal; uefi guests can only be run on FreeBSD 10.3 or newer"
             exit 15
         fi
 
-        case "${_uefi}" in
-            csm)
-                _bootrom="BHYVE_UEFI_CSM.fd"
-                ;&
+        case "${_loader}" in
+            uefi-csm)
+                _bootrom="/usr/local/share/uefi-firmware/BHYVE_UEFI_CSM.fd"
+                ;;
+            uefi-custom)
+                _bootrom="${VM_DS_PATH}/.config/BHYVE_UEFI.fd"
+                ;;                
             *)
-                [ -z "${_bootrom}" ] && _bootrom="BHYVE_UEFI.fd"
-
-                # look in sysutils/uefi-edk2-bhyve install location and our own .config dir
-                if [ -e "${vm_dir}/.config/${_bootrom}" ]; then
-                    _bootrom="${vm_dir}/.config/${_bootrom}"
-                elif [ -e "/usr/local/share/uefi-firmware/${_bootrom}" ]; then
-                    _bootrom="/usr/local/share/uefi-firmware/${_bootrom}"
-                else
-                    util::log "guest" "${_name}" "fatal; unable to locate relevant uefi firmware"
-                    exit 15
-                fi
-
-                _opts="-Hwl bootrom,${_bootrom}"
+                _bootrom="/usr/local/share/uefi-firmware/BHYVE_UEFI.fd"
                 ;;
         esac
-    else
-        _uefi=""
 
-        # we must have a loader
-        if [ -z "${_loader}" ]; then
-            util::log "guest" "${_name}" "fatal; guest does not have a loader specified"
+        if [ ! -e "${_bootrom}" ]; then
+            util::log "guest" "${_name}" "fatal; unable to locate firmware ${_bootrom}"
             exit 15
         fi
+
+        _opts="-Hwl bootrom,${_bootrom}"
+        _uefi="yes"
+    else
+        _uefi=""
     fi
 
     # add any custom bhyve options
@@ -246,14 +248,14 @@ vm::run(){
 
         # use null.iso if not an install and uefi firmware
         # old instructions but some windows versions apparently needed this present
-        [ -z "${_iso}" -a -n "${_uefi}" -a "${_uefi}" != "csm" ] && \
+        [ -z "${_iso}" -a -n "${_uefi}" -a "${_loader}" != "uefi-csm" ] && \
             _iso_dev="-s ${_install_slot}:0,ahci-cd,${vm_dir}/.config/null.iso"
 
         # reasonably ugly hack to remove wait option after first run
         [ "${_run}" -eq "2" ] && vm::bhyve_device_fbuf_clear_wait
 
         # load guest
-        if [ -n "${_loader}" ]; then
+        if [ -z "${_uefi}" ]; then
             guest::load "${_iso}"
             _exit=$?
 
@@ -271,7 +273,7 @@ vm::run(){
         util::log "guest" "${_name}" "starting ${_bhyve_path} (run ${_run})"
 
         # call rctl now as next line will block until bhyve exits
-        rctl::set_limits &
+        rctl::set &
 
         # actually run bhyve!
         # we're already in the background so we just wait for it to exit
@@ -340,7 +342,13 @@ vm::handle_exit(){
     case "${_code}" in
         0) config::get "${_var}" "on_restart" "restart" ;;
         1) ;&
-        2) setvar "${_var}" "shutdown" ;;
+        2) if [ -e "${VM_DS_PATH}/${_name}/restart" ]; then
+               setvar "${_var}" "restart"
+               unlink "${VM_DS_PATH}/${_name}/restart" >/dev/null 2>&1
+           else
+               setvar "${_var}" "shutdown"
+           fi
+           ;;
         *) config::get "${_var}" "on_fault" "shutdown" ;;
     esac
 }
@@ -515,11 +523,6 @@ vm::bhyve_device_disks(){
             if [ -n "${_uefi}" ]; then
                 _slot=$((_slot + 1))
 
-                # stop at slot 6 on uefi
-                if [ ${_slot} -ge 7 ]; then
-                    util::log "guest" "${_name}" "ending disks at disk${_num} due to UEFI firmware limitations"
-                    break
-                fi
             else
                 _func=$((_func + 1))
             fi
@@ -845,6 +848,7 @@ vm::get_disk_path(){
         zvol)        ;&
         sparse-zvol) setvar "${_var}" "/dev/zvol/${VM_DS_ZFS_DATASET}/${_name}/${_disk}" ;;
         custom)      setvar "${_var}" "${_disk}" ;;
+        iscsi)       info::__find_iscsi "${_var}" "${_disk}" ;;
         *)           setvar "${_var}" "${VM_DS_PATH}/${_name}/${_disk}" ;;
     esac
 }
@@ -1071,7 +1075,7 @@ vm::__cpu(){
 
     config::get "_c_socket" "cpu_sockets"
     config::get "_c_core" "cpu_cores"
-    config::get "_c_thread" "cpu_thread"
+    config::get "_c_thread" "cpu_threads"
 
     [ -n "${_c_socket}" ] && _config="${_config},sockets=${_c_socket}"
     [ -n "${_c_core}" ] && _config="${_config},cores=${_c_core}"

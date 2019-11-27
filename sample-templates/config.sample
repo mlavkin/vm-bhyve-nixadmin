@@ -11,10 +11,11 @@
 # double-quotes, and so cannot be used inside any values.
 
 # loader
-# If the guest you are using requires either bhyveload or grub-bhyve,
-# specify the loader to use here.
+# Specify the loader to use for the guest. This can either be
+# one of the original bhyve loaders (bhyveload/grub), or
+# you can specify to use uefi firmware to load the guest
 #
-# Valid Options: bhyveload,grub
+# Valid Options: bhyveload,grub,uefi,uefi-csm
 #
 loader=""
 
@@ -33,19 +34,6 @@ bhyveload_loader=""
 # the grub console before it starts booting
 #
 loader_timeout="3"
-
-# uefi
-# Tells bhyve that it should load the UEFI firmware. To use UEFI
-# this can be any value other than [empty]/off/false/no/0. If
-# it contains the string 'csm', the UEFI BIOS compatability (CSM)
-# firmware will be used.
-#
-# Please note when using UEFI firmware, no loader is required
-# regardless of the guest operating system.
-#
-# Default: no
-#
-uefi=""
 
 # cpu (required)
 # specify the number of cpu cores to give to the guest
@@ -178,7 +166,7 @@ ahci_device_limit="8"
 # This specifies the emulation type for disk0. Please note that each disk requires
 # at least a type and name.
 #
-# Valid Options: virtio-blk,ahci-hd,ahci-cd
+# Valid Options: virtio-blk,ahci-hd,ahci-cd,nvme
 #
 disk0_type="virtio-blk"
 
@@ -188,9 +176,11 @@ disk0_type="virtio-blk"
 # For the zvol options, the zvol must be directly under the guest dataset.
 # There is also a 'custom' option, in which case the disk name should be the full path
 # to the file or device you want to use.
+# For 'iscsi', the disk name must be set to a unique target and lun combination
+# when matched against iscsictl -L output.
 #
 # Default: file
-# Valid Options: file,zvol,sparse-zvol,custom
+# Valid Options: file,zvol,sparse-zvol,custom,iscsi
 #
 disk0_dev=""
 
@@ -204,6 +194,7 @@ disk0_dev=""
 # file              'disk0.img' -> '$vm_dir/$name/disk0.img'
 # zvol|sparse-zvol  'disk0'     -> '/dev/zvol/pool/dataset/path/guest/disk0'
 # custom            '/dev/da10' -> '/dev/da10'
+# iscsi             'tgt[/lun]' -> '/dev/daNN' (lun defaults to 0 if omitted) 
 #
 disk0_name="disk0.img"
 
@@ -474,6 +465,13 @@ zfs_zvol_opts=""
 # locked
 #
 prestart="myscript.pl"
+
+# priority
+# set a priority (nice value) for a guest
+# valid range is -20 (highest) to 20 (only run when system idle), with
+# 0 being the default system priority
+#
+priority="10"
 
 # limit_pcpu
 # use rctl to limit guest to the specified cpu percentage

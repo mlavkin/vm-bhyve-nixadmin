@@ -44,9 +44,9 @@ See the sections below for more in-depth details.
     6. cp /usr/local/share/examples/vm-bhyve/* /mountpoint/for/pool/vm/.templates/
     7. vm switch create public
     8. vm switch add public em0
-    9. vm iso ftp://ftp.freebsd.org/pub/FreeBSD/releases/ISO-IMAGES/10.3/FreeBSD-10.3-RELEASE-amd64-bootonly.iso
+    9. vm iso https://download.freebsd.org/ftp/releases/ISO-IMAGES/11.2/FreeBSD-11.2-RELEASE-amd64-bootonly.iso
     10. vm create myguest
-    11. vm [-f] install myguest FreeBSD-10.3-RELEASE-amd64-bootonly.iso
+    11. vm install [-f] myguest FreeBSD-11.2-RELEASE-amd64-bootonly.iso
     12. vm console myguest
 
 - [ ] Line 1
@@ -188,17 +188,17 @@ example specifies the templatename.conf template, and tells vm-bhyve to create a
 
 You will need an ISO to install the guest with, so download one using the iso command:
 
-    # vm iso ftp://ftp.freebsd.org/pub/FreeBSD/releases/ISO-IMAGES/10.1/FreeBSD-10.1-RELEASE-amd64-disc1.iso
+    # vm iso https://download.freebsd.org/ftp/releases/ISO-IMAGES/11.2/FreeBSD-11.2-RELEASE-amd64-disc1.iso
 
 To start a guest install, run the following command. vm-bhyve will run the machine in the background,
 so use the console command to connect to it and finish installation.
 
-    # vm install testvm FreeBSD-10.1-RELEASE-amd64-disc1.iso
+    # vm install testvm FreeBSD-11.2-RELEASE-amd64-disc1.iso
     # vm console testvm
 
 You can also specify the foreground option to run the guest directly on your terminal:
 
-    # vm -f install testvm FreeBSD-10.1-RELEASE-amd64-disc1.iso
+    # vm -f install testvm FreeBSD-11.2-RELEASE-amd64-disc1.iso
 
 Once installation has finished, you can reboot the guest from inside the console and it will boot up into
 the new OS (assuming installation was successful). Further reboots will work as expected and
@@ -249,6 +249,50 @@ a full shutdown and restart of the guest
 See the man page for a full description of all available commands.
 
     # man vm
+
+## Using cloud images
+
+You can use cloud images to create virtual machines. The `vm img` command will download the image to datastore and 
+uncompress it if needed (.xz, .tar.gz, and .gz files are supported). The image should be in RAW or QCOW2 format.
+To use this feature you'll need install qemu-utils package:
+
+    # pkg install qemu-utils
+
+To launch FreeBSD using official cloud image:
+
+    # vm img https://download.freebsd.org/ftp/releases/VM-IMAGES/11.2-RELEASE/amd64/Latest/FreeBSD-11.2-RELEASE-amd64.raw.xz
+    # vm create -t freebsd-zvol -i FreeBSD-11.2-RELEASE-amd64.raw freebsd-cloud
+    # vm start freebsd-cloud
+
+To list downloaded images:
+
+    # vm img
+    DATASTORE           FILENAME
+    default             CentOS-7-x86_64-GenericCloud-20180930_02.raw
+    default             debian-9-openstack-amd64.qcow2
+    default             Fedora-AtomicHost-28-1.1.x86_64.raw
+    default             FreeBSD-11.2-RELEASE-amd64.raw
+    default             xenial-server-cloudimg-amd64-uefi1.img
+
+## Using cloud init
+
+vm-bhyve has basic support for providing cloud-init configuration to the guest. You can enable it with `-C` option
+to `vm create` command. You can also pass public SSH key to be injected into the guest with option `-k <file>`. 
+
+Example:
+
+    # vm create -t linux -i xenial-server-cloudimg-amd64-uefi1.img -C -k ~/.ssh/id_rsa.pub cloud-init-ubuntu
+    # vm start cloud-init-ubuntu
+    Starting cloud-init-ubuntu
+    * found guest in /zroot/vm/cloud-init-ubuntu
+    * booting...
+    # ssh ubuntu@192.168.0.91
+    The authenticity of host '192.168.0.91 (192.168.0.91)' can't be established.
+    ECDSA key fingerprint is SHA256:6s9uReyhsIXRv0dVRcBCKMHtY0kDYRV7zbM7ot6u604.
+    No matching host key fingerprint found in DNS.
+    Are you sure you want to continue connecting (yes/no)? yes
+    Warning: Permanently added '192.168.0.91' (ECDSA) to the list of known hosts.
+    Welcome to Ubuntu 16.04.5 LTS (GNU/Linux 4.4.0-141-generic x86_64)
     
 ## Adding custom disks
 
@@ -271,7 +315,7 @@ Restart your vm.
 
 ## Windows Support
 
-Please see the Windows section in the Wiki
+Please see the Windows section in the [Wiki](https://github.com/churchers/vm-bhyve/wiki/Running-Windows)
 
 ## Autocomplete
 

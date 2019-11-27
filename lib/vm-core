@@ -29,7 +29,7 @@
 #
 core::list(){
     local _name _loader _cpu _our_host
-    local _memory _run _vm _auto _num _uefi _graphics _vnc
+    local _memory _run _vm _auto _num _graphics _vnc
     local _format="%s^%s^%s^%s^%s^%s^%s^%s\n"
 
     _our_host=$(hostname)
@@ -51,11 +51,7 @@ core::list(){
                 config::get "_loader" "loader" "none"
                 config::get "_cpu" "cpu"
                 config::get "_memory" "memory"
-                config::get "_uefi" "uefi"
                 config::get "_graphics" "graphics"
-
-                # show uefi in loader column if it's a uefi guest
-                util::checkyesno "${_uefi}" && _loader="uefi"
 
                 # defaults
                 _vnc="-"
@@ -101,13 +97,21 @@ core::list(){
 #
 core::create(){
     local _name _opt _size _vmdir _disk _disk_dev _num=0
-    local _zfs_opts _disk_size _template="default" _ds="default" _ds_path
+    local _zfs_opts _disk_size _template="default" _ds="default" _ds_path _img _cpu _memory _uuid
+    local _enable_cloud_init _cloud_init_dir _ssh_public_key _ssh_key_file _network_config _mac
 
-    while getopts d:t:s: _opt ; do
+    while getopts d:t:s:i:c:m:Ck:n: _opt ; do
         case $_opt in
             t) _template=${OPTARG} ;;
             s) _size=${OPTARG} ;;
             d) _ds=${OPTARG} ;;
+            c) _cpu=${OPTARG} ;;
+            m) _memory=${OPTARG} ;;
+            i) _img=${OPTARG} ;;
+            k) _ssh_key_file=${OPTARG} ;;
+            C) _enable_cloud_init='true' ;;
+            n) _network_config=${OPTARG} ;;
+
             *) util::usage ;;
         esac
     done
@@ -135,6 +139,20 @@ core::create(){
     # make sure template has a disk before we start creating anything
     [ -z "${_disk}" ] && util::err "template is missing disk0_name specification"
 
+    if [ -n "${_enable_cloud_init}" ]; then
+        if ! which genisoimage > /dev/null; then
+            util::err "Error: genisoimage is required to work with cloud init! Run 'pkg install cdrkit-genisoimage'."
+        fi
+    fi
+
+    # get ssh public key for cloud-init from file
+    if [ -n "${_ssh_key_file}" ]; then
+
+      [ -z "${_enable_cloud_init}" ] && util::err "cloud-init is required for injecting public key. Use -C to enable it."
+      [ ! -r "${_ssh_key_file}" ] && util::err "can't read file with public key (${_ssh_key_file})"
+      _ssh_public_key="$(cat "${_ssh_key_file}")"
+    fi
+
     # if we're on zfs, make a new filesystem
     zfs::make_dataset "${VM_DS_ZFS_DATASET}/${_name}" "${_zfs_opts}"
 
@@ -145,11 +163,18 @@ core::create(){
     [ $? -eq 0 ] || util::err "unable to copy template to virtual machine directory"
 
     # generate a uuid
-    config::set "${_name}" "uuid" $(uuidgen)
+    _uuid=$(uuidgen)
+    config::set "${_name}" "uuid" ${_uuid}
 
     # get any zvol options
     config::get "_zfs_opts" "zfs_zvol_opts"
 
+    # generate mac address - it's saved in _mac variable
+    vm::generate_static_mac
+
+    # Optional overrides
+    [ -n "${_cpu}" ] && config::set "${_name}" "cpu" "${_cpu}"
+    [ -n "${_memory}" ] && config::set "${_name}" "memory" "${_memory}"
     # use cmd line size for disk 0 if specified
     [ -n "${_size}" ] && _disk_size="${_size}"
 
@@ -158,9 +183,15 @@ core::create(){
         case "${_disk_dev}" in 
             zvol)
                 zfs::make_zvol "${VM_DS_ZFS_DATASET}/${_name}/${_disk}" "${_disk_size}" "0" "${_zfs_opts}"
+                [ $_num -eq 0 ] && [ ! -z "$_img" ] && core::write_img "/dev/zvol/${VM_DS_ZFS_DATASET}/${_name}/${_disk}" "${_img}"
                 ;;			
             sparse-zvol)
                 zfs::make_zvol "${VM_DS_ZFS_DATASET}/${_name}/${_disk}" "${_disk_size}" "1" "${_zfs_opts}"
+                [ $_num -eq 0 ] && [ ! -z "$_img" ] && core::write_img "/dev/zvol/${VM_DS_ZFS_DATASET}/${_name}/${_disk}" "${_img}"
+                ;;
+            custom)
+                ;;
+            iscsi)
                 ;;
             *)
                 truncate -s "${_disk_size}" "${VM_DS_PATH}/${_name}/${_disk}"
@@ -168,6 +199,7 @@ core::create(){
 
                 # make sure only owner can read the disk image
                 chmod 600 "${VM_DS_PATH}/${_name}/${_disk}"
+                [ $_num -eq 0 ] && [ ! -z "$_img" ] && core::write_img "${VM_DS_PATH}/${_name}/${_disk}" "${_img}"
                 ;;
         esac
 
@@ -180,6 +212,83 @@ core::create(){
         config::get "_disk_dev" "disk${_num}_dev"
         config::get "_disk_size" "disk${_num}_size" "20G"
     done
+
+    if [ -n "${_enable_cloud_init}" ]; then
+        core::create_cloud_init
+    fi
+
+    exit 0
+}
+
+core::create_cloud_init(){
+    # create disk with metadata for cloud-init
+    _cloud_init_dir="${VM_DS_PATH}/${_name}/.cloud-init"
+    mkdir -p "${_cloud_init_dir}"
+
+    cat << EOF > "${_cloud_init_dir}/meta-data"
+instance-id: ${_uuid}
+local-hostname: ${_name}
+EOF
+
+    cat << EOF > "${_cloud_init_dir}/user-data"
+#cloud-config
+resize_rootfs: True
+manage_etc_hosts: localhost
+EOF
+    if [ -n "${_ssh_public_key}" ]; then
+        cat << EOF >> "${_cloud_init_dir}/user-data"
+ssh_authorized_keys:
+  - ${_ssh_public_key}
+EOF
+    fi
+
+    if [ -n "${_network_config}" ]; then
+        # Example netconfig param: "ip=10.0.0.2/24;gateway=10.0.0.1;nameservers=1.1.1.1,8.8.8.8"
+        _network_config_ipaddress="$(echo "${_network_config}" | pcregrep -o "ip=\K[^;]*")"
+        _network_config_gateway="$(echo "${_network_config}" | pcregrep -o "gateway=\K[^;]*")"
+        _network_config_nameservers="$(echo "${_network_config}" | pcregrep -o "nameservers=\K[^;]*")"
+
+        cat << EOF > "${_cloud_init_dir}/network-config"
+version: 2
+ethernets:
+  id0:
+    set-name: eth0
+    match:
+      macaddress: "${_mac}"
+    addresses:
+    - ${_network_config_ipaddress}
+    gateway4: ${_network_config_gateway}
+    nameservers:
+      addresses: [${_network_config_nameservers}]
+EOF
+    fi
+
+    genisoimage -output "${VM_DS_PATH}/${_name}/seed.iso" -volid cidata -joliet -rock ${_cloud_init_dir}/* > /dev/null 2>&1 || util::err "Can't write seed.iso for cloud-init"
+    config::set "${_name}" "disk${_num}_type" "ahci-cd"
+    config::set "${_name}" "disk${_num}_name" "seed.iso"
+    config::set "${_name}" "disk${_num}_dev" "file"
+}
+
+# write cloud image to disk image
+#
+# @private
+# @param string _disk_dev device to write image to
+# @param string _img the img file in $vm_dir/.img to use
+#
+core::write_img(){
+    local _disk_dev _img _imgpath
+
+    cmd::parse_args "$@"
+    shift $?
+    _disk_dev="${1}"
+    _img="$2"
+
+    # just run start with an iso
+    datastore::img_find "_imgpath" "${_img}" || util::err "unable to locate img file - '${_img}'"
+    qemu-img dd -O raw if="${_imgpath}" of="${_disk_dev}" bs=1M
+    if [ $? -ne 0 ]; then
+        util::err "failed to write img file with qemu-img"
+    fi
 }
 
 # 'vm add'
@@ -454,7 +563,7 @@ core::__start(){
     local _name="$1"
     local _iso="$2"
     local _cpu _memory _disk _guest _loader _console
-    local _tmux_cmd _tmux_name _util
+    local _tmux_cmd _tmux_name _util _uefi
 
     [ -z "${_name}" ] && util::usage
 
@@ -480,6 +589,7 @@ core::__start(){
     config::get "_memory" "memory"
     config::get "_disk" "disk0_name"
     config::get "_loader" "loader"
+    config::get "_uefi" "uefi"
 
     # check minimum configuration
     if [ -z "${_cpu}" -o -z "${_memory}" -o -z "${_disk}" ]; then
@@ -492,6 +602,10 @@ core::__start(){
         echo "  ! no unrestricted guest support in cpu. only single vcpu FreeBSD guests supported"
         return 1
     fi
+
+    # check loader
+    # uefi="" deprecated in 1.3, must be set via loader in 1.4
+    [ -z "${_loader}" -a -n "${_uefi}" ] && echo "  ! uefi setting is deprecated. please set loader=\"uefi\", loader=\"uefi-csm\" or loader=\"uefi-custom\""
 
     # check loader
     if [ "${_loader}" = "grub" ]; then
@@ -532,6 +646,21 @@ core::__start(){
     else
         $0 _run "${_name}" "${_iso}" >/dev/null 2>&1 &
     fi
+}
+
+# 'vm restart'
+# restart a guest
+# all we do is create a "restart" file which vm-run looks for
+#
+# @param string _name name of the guest to restart
+#
+core::restart(){
+    local _name="$1"
+
+    datastore::get_guest "${_name}" || util::err "unable to locate specified guest"
+    echo "Setting guest restart flag"
+    touch "${VM_DS_PATH}/${_name}/restart" >/dev/null 2>&1
+    core::stop "${_name}"
 }
 
 # 'vm stop'
@@ -646,8 +775,10 @@ core::destroy(){
         util::confirm "Are you sure you want to completely remove this virtual machine" || exit 0
     fi
 
-    zfs::destroy_dataset "${VM_DS_ZFS_DATASET:?}/${_name:?}"
+    [ -n "${VM_DS_ZFS_DATASET}" ] && zfs::destroy_dataset "${VM_DS_ZFS_DATASET:?}/${_name:?}"
     [ -e "${VM_DS_PATH}/${_name}" ] && rm -R "${VM_DS_PATH:?}/${_name:?}"
+
+    exit 0
 }
 
 # 'vm rename'
@@ -755,12 +886,76 @@ core::configure(){
 # @param string _url if specified, the url will be fetch'ed into $vm_dir/.iso
 #
 core::iso(){
-    local _url="$1"
+    local _url _ds="default"
+
+    while getopts d:u _opt ; do
+        case $_opt in
+            d) _ds=${OPTARG} ;;
+            *) util::usage ;;
+        esac
+    done
+
+    shift $((OPTIND - 1))
+    _url=$1
 
     if [ -n "${_url}" ]; then
-        fetch -o "${vm_dir}/.iso" "${_url}"
+        datastore::get_iso "${_ds}" || util::err "unable to locate path for datastore '${_ds}'"
+        fetch -o "${VM_DS_PATH}" "${_url}"
     else
         datastore::iso_list
+    fi
+}
+
+# uncompress cloud image
+#
+# @private
+# @param string _filepath path to file to decompress
+#
+core::decompress(){
+    local _filepath
+
+    cmd::parse_args "$@"
+    shift $?
+    _filepath="${1}"
+
+    if echo "${_filepath}" | grep "\.xz$" > /dev/null; then
+        xz -d "${_filepath}"
+    elif echo "${_filepath}" | grep "\.tar\.gz$" > /dev/null; then
+        tar Szxf "${_filepath}" -C "$(dirname "${_filepath}")"
+        rm -f "${_filepath}"
+    elif echo "${_filepath}" | grep "\.gz$" > /dev/null; then
+        gunzip "${_filepath}"
+    fi
+}
+
+# 'vm img'
+# list cloud images or get a new one
+#
+# @param string _url if specified, the url will be fetch'ed into $vm_dir/.img
+#
+core::img(){
+    local _url _ds="default" _filename
+    if ! which qemu-img > /dev/null; then
+        util::err "Error: qemu-img is required to work with cloud images! Run 'pkg install qemu-utils'."
+    fi
+
+    while getopts d:u _opt ; do
+        case $_opt in
+            d) _ds=${OPTARG} ;;
+            *) util::usage ;;
+        esac
+    done
+
+    shift $((OPTIND - 1))
+    _url=$1
+
+    if [ -n "${_url}" ]; then
+        datastore::get_img "${_ds}" || util::err "unable to locate path for datastore '${_ds}'"
+        _filename=$(basename "${_url}")
+        fetch -o "${VM_DS_PATH}" "${_url}"
+        core::decompress "${VM_DS_PATH}/${_filename}"
+    else
+        datastore::img_list
     fi
 }
 

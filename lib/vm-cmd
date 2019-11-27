@@ -24,8 +24,8 @@
 # IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-CMD_VALID_LIST="init,switch,datastore,image,get,set,list,create,destroy,rename,install,start,stop,add"
-CMD_VALID_LIST="${CMD_VALID_LIST},reset,poweroff,startall,stopall,console,iso,configure,passthru,_run"
+CMD_VALID_LIST="init,switch,datastore,image,get,set,list,create,destroy,rename,install,start,stop,restart"
+CMD_VALID_LIST="${CMD_VALID_LIST},add,reset,poweroff,startall,stopall,console,iso,img,configure,passthru,_run"
 CMD_VALID_LIST="${CMD_VALID_LIST},info,clone,snapshot,rollback,send,recv,version,usage"
 
 # cmd: vm ...
@@ -74,6 +74,7 @@ cmd::parse(){
         install)   core::install "$@" ;;
         start)     core::start "$@" ;;
         stop)      core::stop "$@" ;;
+        restart)   core::restart "$@" ;;
         add)       core::add "$@" ;;
         reset)     core::reset "$@" ;;
         poweroff)  core::poweroff "$@" ;;
@@ -81,6 +82,7 @@ cmd::parse(){
         stopall)   core::stopall ;;
         console)   core::console "$@" ;;
         iso)       core::iso "$@" ;;
+        img)       core::img "$@" ;;
         configure) core::configure "$@" ;;
         passthru)  core::passthru ;;
         _run)      vm::run "$@" ;;
@@ -133,7 +135,7 @@ cmd::parse_datastore(){
     local _cmd
 
     # try to find a matching command
-    cmd::find "_cmd" "$1" "list,add,remove,iso" || util::usage
+    cmd::find "_cmd" "$1" "list,add,remove,iso,img" || util::usage
     shift
 
     case "${_cmd}" in
@@ -141,6 +143,7 @@ cmd::parse_datastore(){
         add)    datastore::add "$@" ;;
         remove) datastore::remove "$@" ;;
         iso)    datastore::iso "$@" ;;
+        img)    datastore::img "$@" ;;
         *)      util::err "unknown command '${_user_cmd}'. please run 'vm usage' or view the manpage for help" ;;
     esac
 }
